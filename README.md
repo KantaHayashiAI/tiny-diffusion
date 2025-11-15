@@ -81,3 +81,8 @@ tiny-diffusion/
     ├── diffusion-process.py    # Denoising visualization
     └── game-of-life.py         # Game of Life sampling
 ```
+
+
+
+## License
+MIT
