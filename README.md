@@ -63,7 +63,7 @@ uv run animations/visualize.py --blocks 10
 ```
 
 
-## How It Works
+## Differences Between The Models
 
 ### GPT (Autoregressive)
 - Predicts the next token given all previous tokens
@@ -74,12 +74,10 @@ uv run animations/visualize.py --blocks 10
 ### Diffusion (Non-Autoregressive)
 - Predicts original tokens given partially masked sequences
 - Uses **bidirectional attention** (can look at all tokens)
-- Generates text **in parallel** (multiple tokens per step, based on confidence)
-- Generates in blocks: fills in masked tokens iteratively, then moves to the next block
+- Generates text **in parallel** and in blocks: fills in masked tokens iteratively, then moves to the next block
 - Training: minimize cross-entropy loss on denoising masked tokens
 
 ### Key Modifications
-
 The diffusion model makes **5 key changes** to the GPT architecture:
 
 1. **Add mask token** to vocabulary (`_`) for representing noised tokens
