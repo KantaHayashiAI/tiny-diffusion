@@ -88,11 +88,13 @@ The diffusion model makes **5 key changes** to the GPT architecture:
 
 
 ## Acknoledgements
-The code for both `gpt.py` and `diffusion` takes heavy inspiration from Andrej Karpathy's two implementations:
+The code for `gpt.py` and `diffusion.py` take heavy inspiration from the Andrej Karpathy GPT implementations listed below:
 - [nanochat GPT implementation](https://github.com/karpathy/nanochat/blob/master/nanochat/gpt.py)
 - ["Let's build GPT" video GPT implementation](https://github.com/karpathy/ng-video-lecture/blob/master/gpt.py)
 
-I combined them for own implemenation, `gpt.py`, which strikes a balance between simplicity and good generation quality. The `diffusion.py` file is a modified version of `gpt.py` with as few modifications as possible to get it to do language diffusion.
+My GPT implemenation, `gpt.py`, aims to strike a balance between simplicity and good generation quality.
+
+The `diffusion.py` file is a modified version of `gpt.py` with as few modifications as possible to get it to do language diffusion.
 
 
 ## License
