@@ -44,7 +44,7 @@ uv run diffusion.py --train
 # Train GPT model
 uv run gpt.py --train
 ```
-The `gpt` model trains for 5,000 iterations while the `diffusion` model trains for 10,000. The weights are saved to the `weights/` directory.
+The `gpt` model trains for 5,000 iterations while the `diffusion` model trains for 10,000, taking ~10 and ~20 minutes respectively on an A100 GPU. The weights are saved to the `weights/` directory.
 
 The diffusion model trains for twice as long because half as many tokens count towards the loss during training (only masked tokens contribute to the loss).
 
