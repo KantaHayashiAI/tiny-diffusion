@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 import torch.nn.functional as F
+from contextlib import nullcontext
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
@@ -159,6 +160,11 @@ def generate_hnet_diffusion_frames(
     device = next(model.parameters()).device
     block_size = 256
     mask_token_id = core.vocab_diff.mask_token_id
+    amp_ctx = (
+        torch.autocast("cuda", torch.bfloat16)
+        if device.type == "cuda"
+        else nullcontext()
+    )
 
     print(f"Pre-calculating {num_blocks} blocks for H-Net diffusion...")
 
@@ -180,7 +186,8 @@ def generate_hnet_diffusion_frames(
 
     def model_logits(x):
         iids = core.to_njt(x)
-        logits, _extra = model(iids)
+        with amp_ctx:
+            logits, _extra = model(iids)
         return core.flat_logits_to_btt(
             logits, x.size(0), x.size(1), core.vocab_diff.vocab_size
         )
@@ -234,6 +241,11 @@ def generate_hnet_diffusion_frames(
 def generate_hnet_gpt_output(model, core, max_new_tokens, prompt_len=16, temp=0.8):
     device = next(model.parameters()).device
     block_size = 256
+    amp_ctx = (
+        torch.autocast("cuda", torch.bfloat16)
+        if device.type == "cuda"
+        else nullcontext()
+    )
 
     print(f"Generating {max_new_tokens} tokens with H-Net GPT...")
 
@@ -242,7 +254,8 @@ def generate_hnet_gpt_output(model, core, max_new_tokens, prompt_len=16, temp=0.
     for _ in range(max_new_tokens):
         cur_context = x[:, -block_size:]
         iids = core.to_njt(cur_context)
-        logits, _extra = model(iids)
+        with amp_ctx:
+            logits, _extra = model(iids)
         logits = core.flat_logits_to_btt(
             logits,
             cur_context.size(0),
@@ -494,11 +507,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
+        "cuda" if torch.cuda.is_available() else "cpu"
     )
     print(f"Using device: {device}\n")
 
