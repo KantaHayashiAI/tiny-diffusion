@@ -16,6 +16,9 @@ This repo also contains a tiny gpt implementation in 313 lines of code. ~80% of 
 # Install dependencies (Python 3.10+)
 uv sync
 
+# (Optional) H-Net dependencies (CUDA required)
+uv sync --extra hnet
+
 # Download the dataset
 wget https://github.com/nathan-barry/tiny-diffusion/releases/download/v2.0.0/data.txt
 
@@ -31,6 +34,12 @@ uv run diffusion.py
 
 # GPT (autoregressive)
 uv run gpt.py
+
+# H-Net (autoregressive, CUDA required)
+uv run hnet_gpt.py
+
+# H-Net (diffusion / non-autoregressive, CUDA required)
+uv run hnet_diffusion.py
 ```
 Both models generate 2,000 characters by default and use the first 16 characters of `data.txt` as the initial context. These are parameters in the `generate` function and can be easily modified.
 
@@ -43,10 +52,21 @@ uv run diffusion.py --train
 
 # Train GPT model
 uv run gpt.py --train
+
+# Train H-Net (autoregressive, CUDA required)
+uv run hnet_gpt.py --train
+
+# Train H-Net (diffusion / non-autoregressive, CUDA required)
+uv run hnet_diffusion.py --train
 ```
 The `gpt` model trains for 5,000 iterations while the `diffusion` model trains for 10,000, taking ~10 and ~20 minutes respectively on an A100 GPU. The weights are saved to the `weights/` directory.
 
 The diffusion model trains for twice as long because half as many tokens count towards the loss during training (only masked tokens contribute to the loss).
+
+## H-Net Notes
+- The H-Net implementation is vendored from the `hnet-impl` reference and expects CUDA + flash-attn/mamba-ssm.
+- Use `--arch` and `--d-model` to control hierarchy depth and widths (e.g. `--arch T2,T2 --d-model 256,512`).
+- `hnet_diffusion.py` sets non-causal attention and uses the same masked-token objective as `diffusion.py`.
 
 ### Visualization
 Visualize the generation process step-by-step:
