@@ -80,6 +80,12 @@ uv run visualize.py --compare
 
 # Generate more blocks
 uv run visualize.py --blocks 10
+
+# Visualize H-Net diffusion (CUDA required)
+uv run visualize.py --hnet
+
+# Compare H-Net diffusion vs H-Net GPT (CUDA required)
+uv run visualize.py --hnet --compare
 ```
 
 

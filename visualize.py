@@ -18,6 +18,14 @@ import diffusion
 import gpt
 
 
+def _parse_int_list(s: str):
+    return [int(x) for x in s.split(",") if x]
+
+
+def _parse_arch_list(s: str):
+    return [a.strip() for a in s.split(",") if a.strip()]
+
+
 def generate_diffusion_frames(
     model,
     num_blocks=5,
@@ -139,7 +147,117 @@ def generate_gpt_output(model, max_new_tokens, prompt_len=16, temp=0.8):
     return x[0].cpu()
 
 
-def animate_diffusion(diffusion_frames, num_blocks, chars_per_row=64):
+def generate_hnet_diffusion_frames(
+    model,
+    core,
+    num_blocks=5,
+    prompt_len=16,
+    temp=0.8,
+    confidence_threshold=0.95,
+    top_k=2,
+):
+    device = next(model.parameters()).device
+    block_size = 256
+    mask_token_id = core.vocab_diff.mask_token_id
+
+    print(f"Pre-calculating {num_blocks} blocks for H-Net diffusion...")
+
+    all_frames = []
+    all_tokens_history = core.train_data_diff[:prompt_len].tolist()
+
+    def capture_frame(all_tokens_history, x, masked, block_idx, block_len):
+        full_tokens = torch.tensor(all_tokens_history, dtype=torch.long, device=device)
+        full_tokens = torch.cat(
+            [full_tokens, x[0, prompt_len : prompt_len + block_len]]
+        )
+        full_mask = torch.zeros(len(full_tokens), dtype=torch.bool, device=device)
+        full_mask[len(all_tokens_history) :] = masked[
+            0, prompt_len : prompt_len + block_len
+        ]
+        all_frames.append(
+            (full_tokens.cpu().clone(), full_mask.cpu().clone(), block_idx)
+        )
+
+    def model_logits(x):
+        iids = core.to_njt(x)
+        logits, _extra = model(iids)
+        return core.flat_logits_to_btt(
+            logits, x.size(0), x.size(1), core.vocab_diff.vocab_size
+        )
+
+    for block_idx in range(num_blocks):
+        max_new_tokens = 240
+        block_len = min(block_size - prompt_len, max_new_tokens)
+
+        x = torch.full((1, block_size), mask_token_id, dtype=torch.long, device=device)
+        x[0, :prompt_len] = torch.tensor(
+            all_tokens_history[-prompt_len:], device=device
+        )
+
+        masked = torch.zeros(1, block_size, dtype=torch.bool, device=device)
+        masked[0, prompt_len : prompt_len + block_len] = True
+
+        capture_frame(all_tokens_history, x, masked, block_idx, block_len)
+
+        while masked.any():
+            logits = model_logits(x)
+            probs = F.softmax(logits / temp, dim=-1)
+            top_k_probs, top_k_indices = torch.topk(probs, k=top_k, dim=-1)
+            confidences = top_k_probs.sum(dim=-1)
+
+            decode_mask = (confidences >= confidence_threshold) & masked
+            if not decode_mask.any():
+                masked_confidences = torch.where(
+                    masked, confidences, torch.tensor(-float("inf"), device=device)
+                )
+                decode_mask.view(-1)[masked_confidences.argmax()] = True
+
+            top_k_probs_norm = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+            sampled_k = torch.multinomial(top_k_probs_norm.view(-1, top_k), 1).view(
+                1, block_size
+            )
+            sampled_tokens = torch.gather(
+                top_k_indices, -1, sampled_k.unsqueeze(-1)
+            ).squeeze(-1)
+
+            x = torch.where(decode_mask, sampled_tokens, x)
+            masked = masked & ~decode_mask
+
+            capture_frame(all_tokens_history, x, masked, block_idx, block_len)
+
+        all_tokens_history.extend(x[0, prompt_len : prompt_len + block_len].tolist())
+
+    print(f"H-Net diffusion: Generated {len(all_frames)} frames")
+    return all_frames
+
+
+def generate_hnet_gpt_output(model, core, max_new_tokens, prompt_len=16, temp=0.8):
+    device = next(model.parameters()).device
+    block_size = 256
+
+    print(f"Generating {max_new_tokens} tokens with H-Net GPT...")
+
+    x = core.train_data_ar[:prompt_len].unsqueeze(0).to(device)
+
+    for _ in range(max_new_tokens):
+        cur_context = x[:, -block_size:]
+        iids = core.to_njt(cur_context)
+        logits, _extra = model(iids)
+        logits = core.flat_logits_to_btt(
+            logits,
+            cur_context.size(0),
+            cur_context.size(1),
+            core.vocab_ar.vocab_size,
+        )
+        logits = logits[:, -1, :]
+        probs = F.softmax(logits / temp, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        x = torch.cat((x, next_token), dim=1)
+
+    return x[0].cpu()
+
+
+def animate_diffusion(diffusion_frames, num_blocks, chars_per_row=64, *, decode_fn=None):
     """Create animation for diffusion model only"""
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.set_xlim(0, 1)
@@ -167,7 +285,10 @@ def animate_diffusion(diffusion_frames, num_blocks, chars_per_row=64):
 
         text_chars = []
         for idx in range(len(frame_tokens)):
-            char = diffusion.decode([frame_tokens[idx].item()])
+            if decode_fn is None:
+                char = diffusion.decode([frame_tokens[idx].item()])
+            else:
+                char = decode_fn(frame_tokens[idx].item())
             if char == "\n":
                 char = " "
             text_chars.append("█" if mask[idx] else char)
@@ -198,7 +319,14 @@ def animate_diffusion(diffusion_frames, num_blocks, chars_per_row=64):
 
 
 def animate_comparison(
-    diffusion_frames, gpt_tokens, num_blocks, prompt_len, chars_per_row=64
+    diffusion_frames,
+    gpt_tokens,
+    num_blocks,
+    prompt_len,
+    chars_per_row=64,
+    *,
+    decode_diffusion=None,
+    decode_gpt=None,
 ):
     """Create animation comparing diffusion and GPT"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -240,7 +368,10 @@ def animate_comparison(
 
         text_chars = []
         for idx in range(len(frame_tokens)):
-            char = diffusion.decode([frame_tokens[idx].item()])
+            if decode_diffusion is None:
+                char = diffusion.decode([frame_tokens[idx].item()])
+            else:
+                char = decode_diffusion(frame_tokens[idx].item())
             if char == "\n":
                 char = " "
             text_chars.append("█" if mask[idx] else char)
@@ -264,10 +395,13 @@ def animate_comparison(
         gpt_idx = min(frame_idx + prompt_len, len(gpt_tokens))
         visible_tokens = gpt_tokens[:gpt_idx]
 
-        text_chars = [
-            gpt.decode([t.item()]) if gpt.decode([t.item()]) != "\n" else " "
-            for t in visible_tokens
-        ]
+        text_chars = []
+        for t in visible_tokens:
+            if decode_gpt is None:
+                ch = gpt.decode([t.item()])
+            else:
+                ch = decode_gpt(t.item())
+            text_chars.append(ch if ch != "\n" else " ")
         continuous_text = "".join(text_chars)
         lines = [
             continuous_text[i : i + chars_per_row]
@@ -315,6 +449,47 @@ def main():
         default=16,
         help="Length of initial prompt (default: 16)",
     )
+    parser.add_argument(
+        "--hnet",
+        action="store_true",
+        help="Use H-Net weights (CUDA required)",
+    )
+    parser.add_argument(
+        "--hnet-diffusion-weights",
+        type=str,
+        default="weights/hnet_diffusion.pt",
+        help="Path to H-Net diffusion weights",
+    )
+    parser.add_argument(
+        "--hnet-diffusion-arch",
+        type=str,
+        default="T2,T2",
+        help="H-Net diffusion arch list (e.g. 'T2,T2')",
+    )
+    parser.add_argument(
+        "--hnet-diffusion-d-model",
+        type=str,
+        default="256,512",
+        help="H-Net diffusion d_model list (e.g. '256,512')",
+    )
+    parser.add_argument(
+        "--hnet-gpt-weights",
+        type=str,
+        default="weights/hnet_gpt.pt",
+        help="Path to H-Net GPT weights",
+    )
+    parser.add_argument(
+        "--hnet-gpt-arch",
+        type=str,
+        default="m2,T2",
+        help="H-Net GPT arch list (e.g. 'm2,T2')",
+    )
+    parser.add_argument(
+        "--hnet-gpt-d-model",
+        type=str,
+        default="256,512",
+        help="H-Net GPT d_model list (e.g. '256,512')",
+    )
 
     args = parser.parse_args()
 
@@ -327,37 +502,110 @@ def main():
     )
     print(f"Using device: {device}\n")
 
-    # Load and generate diffusion
-    diffusion_path = os.path.join(os.path.dirname(__file__), "weights", "diffusion.pt")
-    print(f"Loading diffusion model from {diffusion_path}...")
-    diffusion_model = diffusion.Model().to(device)
-    diffusion_model.load_state_dict(torch.load(diffusion_path, map_location=device))
-    diffusion_model.eval()
+    if args.hnet:
+        if device.type != "cuda":
+            raise RuntimeError("H-Net visualization requires CUDA.")
 
-    diffusion_frames = generate_diffusion_frames(
-        diffusion_model, args.blocks, args.prompt_len
-    )
+        # Lazy import to avoid hard deps when not using H-Net
+        import hnet_core as core
+        from hnet_impl import HNetLM
 
-    if args.compare:
-        # Calculate how many tokens diffusion generates
-        max_new_tokens = args.blocks * (diffusion.block_size - args.prompt_len)
+        def decode_diff(i):
+            return core.vocab_diff.decode([i])
 
-        # Load and generate GPT
-        gpt_path = os.path.join(os.path.dirname(__file__), "weights", "gpt.pt")
-        print(f"Loading GPT model from {gpt_path}...")
-        gpt_model = gpt.Model().to(device)
-        gpt_model.load_state_dict(torch.load(gpt_path, map_location=device))
-        gpt_model.eval()
+        def decode_ar(i):
+            return core.vocab_ar.decode([i])
 
-        gpt_tokens = generate_gpt_output(gpt_model, max_new_tokens, args.prompt_len)
-
-        print("Done! Showing comparison animation...\n")
-        anim = animate_comparison(
-            diffusion_frames, gpt_tokens, args.blocks, args.prompt_len
+        # Load and generate H-Net diffusion
+        diffusion_path = os.path.join(os.path.dirname(__file__), args.hnet_diffusion_weights)
+        print(f"Loading H-Net diffusion model from {diffusion_path}...")
+        diff_arch = _parse_arch_list(args.hnet_diffusion_arch)
+        diff_d_model = _parse_int_list(args.hnet_diffusion_d_model)
+        if len(diff_arch) != len(diff_d_model):
+            raise ValueError("--hnet-diffusion-arch and --hnet-diffusion-d-model must match")
+        c_diff = core.build_hnet_config(
+            vocab_size=core.vocab_diff.vocab_size,
+            d_model=diff_d_model,
+            arch=diff_arch,
+            is_causal=False,
         )
+        diffusion_model = HNetLM(c_diff).to(device)
+        diffusion_model.load_state_dict(torch.load(diffusion_path, map_location=device))
+        diffusion_model.eval()
+
+        diffusion_frames = generate_hnet_diffusion_frames(
+            diffusion_model, core, args.blocks, args.prompt_len
+        )
+
+        if args.compare:
+            max_new_tokens = args.blocks * (256 - args.prompt_len)
+
+            gpt_path = os.path.join(os.path.dirname(__file__), args.hnet_gpt_weights)
+            print(f"Loading H-Net GPT model from {gpt_path}...")
+            gpt_arch = _parse_arch_list(args.hnet_gpt_arch)
+            gpt_d_model = _parse_int_list(args.hnet_gpt_d_model)
+            if len(gpt_arch) != len(gpt_d_model):
+                raise ValueError("--hnet-gpt-arch and --hnet-gpt-d-model must match")
+            c_ar = core.build_hnet_config(
+                vocab_size=core.vocab_ar.vocab_size,
+                d_model=gpt_d_model,
+                arch=gpt_arch,
+                is_causal=True,
+            )
+            gpt_model = HNetLM(c_ar).to(device)
+            gpt_model.load_state_dict(torch.load(gpt_path, map_location=device))
+            gpt_model.eval()
+
+            gpt_tokens = generate_hnet_gpt_output(
+                gpt_model, core, max_new_tokens, args.prompt_len
+            )
+
+            print("Done! Showing H-Net comparison animation...\n")
+            anim = animate_comparison(
+                diffusion_frames,
+                gpt_tokens,
+                args.blocks,
+                args.prompt_len,
+                decode_diffusion=decode_diff,
+                decode_gpt=decode_ar,
+            )
+        else:
+            print("Done! Showing H-Net diffusion animation...\n")
+            anim = animate_diffusion(
+                diffusion_frames, args.blocks, decode_fn=decode_diff
+            )
     else:
-        print("Done! Showing diffusion animation...\n")
-        anim = animate_diffusion(diffusion_frames, args.blocks)
+        # Load and generate diffusion
+        diffusion_path = os.path.join(os.path.dirname(__file__), "weights", "diffusion.pt")
+        print(f"Loading diffusion model from {diffusion_path}...")
+        diffusion_model = diffusion.Model().to(device)
+        diffusion_model.load_state_dict(torch.load(diffusion_path, map_location=device))
+        diffusion_model.eval()
+
+        diffusion_frames = generate_diffusion_frames(
+            diffusion_model, args.blocks, args.prompt_len
+        )
+
+        if args.compare:
+            # Calculate how many tokens diffusion generates
+            max_new_tokens = args.blocks * (diffusion.block_size - args.prompt_len)
+
+            # Load and generate GPT
+            gpt_path = os.path.join(os.path.dirname(__file__), "weights", "gpt.pt")
+            print(f"Loading GPT model from {gpt_path}...")
+            gpt_model = gpt.Model().to(device)
+            gpt_model.load_state_dict(torch.load(gpt_path, map_location=device))
+            gpt_model.eval()
+
+            gpt_tokens = generate_gpt_output(gpt_model, max_new_tokens, args.prompt_len)
+
+            print("Done! Showing comparison animation...\n")
+            anim = animate_comparison(
+                diffusion_frames, gpt_tokens, args.blocks, args.prompt_len
+            )
+        else:
+            print("Done! Showing diffusion animation...\n")
+            anim = animate_diffusion(diffusion_frames, args.blocks)
 
     plt.show()
 
