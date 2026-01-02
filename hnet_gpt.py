@@ -2,6 +2,7 @@
 import argparse
 import os
 import time
+from contextlib import nullcontext
 
 import torch
 from torch.nn import functional as F
@@ -29,6 +30,11 @@ def parse_int_list(s: str):
 def generate(model, max_new_tokens, prompt_len=16, temp=0.8):
     device = next(model.parameters()).device
     vocab = core.vocab_ar
+    amp_ctx = (
+        torch.autocast("cuda", torch.bfloat16)
+        if device.type == "cuda"
+        else nullcontext()
+    )
 
     # Start with first prompt_len tokens from data as context
     x = core.train_data_ar[:prompt_len].unsqueeze(0).to(device)
@@ -36,7 +42,8 @@ def generate(model, max_new_tokens, prompt_len=16, temp=0.8):
     for _ in range(max_new_tokens):
         cur_context = x[:, -block_size:]
         iids = core.to_njt(cur_context)
-        logits, _extra = model(iids)
+        with amp_ctx:
+            logits, _extra = model(iids)
         logits = core.flat_logits_to_btt(
             logits, cur_context.size(0), cur_context.size(1), vocab.vocab_size
         )
@@ -157,8 +164,13 @@ if __name__ == "__main__":
             )
             iids = core.to_njt(xb)
             lbls = core.to_njt(yb).long()
-
-            (l_avg, _l_sum), extras = model(iids, lbls)
+            amp_ctx = (
+                torch.autocast("cuda", torch.bfloat16)
+                if device.type == "cuda"
+                else nullcontext()
+            )
+            with amp_ctx:
+                (l_avg, _l_sum), extras = model(iids, lbls)
             l_ratio = sum([e.loss_ratio for e in extras], torch.tensor(0.0, device=device))
             loss = l_avg + l_ratio
 

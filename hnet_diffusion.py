@@ -2,6 +2,7 @@
 import argparse
 import os
 import time
+from contextlib import nullcontext
 
 import torch
 from torch.nn import functional as F
@@ -27,8 +28,15 @@ def parse_int_list(s: str):
 
 @torch.no_grad()
 def model_logits(model, x, vocab_size: int):
+    device = next(model.parameters()).device
+    amp_ctx = (
+        torch.autocast("cuda", torch.bfloat16)
+        if device.type == "cuda"
+        else nullcontext()
+    )
     iids = core.to_njt(x)
-    logits, _extra = model(iids)
+    with amp_ctx:
+        logits, _extra = model(iids)
     return core.flat_logits_to_btt(logits, x.size(0), x.size(1), vocab_size)
 
 
@@ -209,7 +217,13 @@ if __name__ == "__main__":
                 "train", batch_size=batch_size, block_size=block_size, device=device
             )
             iids = core.to_njt(xb)
-            logits, extras = model(iids)
+            amp_ctx = (
+                torch.autocast("cuda", torch.bfloat16)
+                if device.type == "cuda"
+                else nullcontext()
+            )
+            with amp_ctx:
+                logits, extras = model(iids)
             logits_flat = logits.values()
             targets_flat = yb.view(-1)
             mask_flat = mb.view(-1)

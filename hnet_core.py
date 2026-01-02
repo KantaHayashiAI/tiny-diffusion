@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Iterable
+from contextlib import nullcontext
 
 import torch
 from torch import nested
@@ -151,7 +152,13 @@ def estimate_loss_ar(model, *, eval_iters: int, batch_size: int, block_size: int
             )
             iids = to_njt(X)
             lbls = to_njt(Y).long()
-            (l_mean, _l_sum), _extra = model(iids, lbls)
+            amp_ctx = (
+                torch.autocast("cuda", torch.bfloat16)
+                if device.type == "cuda"
+                else nullcontext()
+            )
+            with amp_ctx:
+                (l_mean, _l_sum), _extra = model(iids, lbls)
             losses[k] = l_mean.item()
         out[split] = losses.mean()
     model.train()
@@ -177,7 +184,13 @@ def estimate_loss_diffusion(
                 split, batch_size=batch_size, block_size=block_size, device=device
             )
             iids = to_njt(X)
-            logits, _extra = model(iids)
+            amp_ctx = (
+                torch.autocast("cuda", torch.bfloat16)
+                if device.type == "cuda"
+                else nullcontext()
+            )
+            with amp_ctx:
+                logits, _extra = model(iids)
             logits_flat = logits.values()
             targets_flat = Y.view(-1)
             mask_flat = M.view(-1)
