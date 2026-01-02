@@ -463,6 +463,12 @@ def main():
         help="Length of initial prompt (default: 16)",
     )
     parser.add_argument(
+        "--save",
+        type=str,
+        default="",
+        help="Save animation to a file (e.g. out.gif)",
+    )
+    parser.add_argument(
         "--hnet",
         action="store_true",
         help="Use H-Net weights (CUDA required)",
@@ -616,7 +622,11 @@ def main():
             print("Done! Showing diffusion animation...\n")
             anim = animate_diffusion(diffusion_frames, args.blocks)
 
-    plt.show()
+    if args.save:
+        print(f"Saving animation to {args.save} ...")
+        anim.save(args.save, writer="pillow", fps=30)
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
